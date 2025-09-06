@@ -114,10 +114,7 @@ def _high_precision_clock_loop(port):
 
 def midi_input_thread(input_name, output_name):
     global playing, BPM, tap_times
-    with (
-        mido.open_input(input_name) as inport,
-        mido.open_output(output_name, virtual=True) as outport,
-    ):
+    with mido.open_input(input_name) as inport:
         for msg in inport:
             if msg.type == "control_change" and msg.channel == config["channel"]:
                 # Clock control CC
