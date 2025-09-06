@@ -255,6 +255,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--list", action="store_true", help="List available MIDI ports and exit"
     )
+    parser.add_argument(
+        "--daemon", action="store_true", help="Run as daemon (no CLI input)"
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -312,26 +315,36 @@ if __name__ == "__main__":
         )
         t_in.start()
 
-    print("MIDI clock ready. Commands: enter BPM number, 'start', 'stop', or 'quit'.")
-
-    while True:
-        cmd = input("> ")
-        if cmd.lower() in ["quit", "exit"]:
+    if args.daemon:
+        print("MIDI clock daemon started. Control via MIDI CC messages.")
+        print("Clock control: CC20 (0=start, 1=stop), Tap tempo: CC21")
+        try:
+            while running:
+                time.sleep(1)
+        except KeyboardInterrupt:
             running = False
-            break
-        elif cmd.lower() == "start":
-            playing = True
-            print("Clock START from console.")
-        elif cmd.lower() == "stop":
-            playing = False
-            print("Clock STOP from console.")
-        else:
-            try:
-                new_bpm = float(cmd)
-                if new_bpm > 0:
-                    BPM = new_bpm
-                    print(f"BPM updated to {BPM}")
-            except ValueError:
-                print(
-                    "Invalid input. Enter a number for BPM, 'start', 'stop', or 'quit'."
-                )
+            print("\nShutting down...")
+    else:
+        print("MIDI clock ready. Commands: enter BPM number, 'start', 'stop', or 'quit'.")
+
+        while True:
+            cmd = input("> ")
+            if cmd.lower() in ["quit", "exit"]:
+                running = False
+                break
+            elif cmd.lower() == "start":
+                playing = True
+                print("Clock START from console.")
+            elif cmd.lower() == "stop":
+                playing = False
+                print("Clock STOP from console.")
+            else:
+                try:
+                    new_bpm = float(cmd)
+                    if new_bpm > 0:
+                        BPM = new_bpm
+                        print(f"BPM updated to {BPM}")
+                except ValueError:
+                    print(
+                        "Invalid input. Enter a number for BPM, 'start', 'stop', or 'quit'."
+                    )

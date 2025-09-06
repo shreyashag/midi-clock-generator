@@ -1,0 +1,22 @@
+[Unit]
+Description=Python MIDI Clock Generator
+After=sound.target network.target
+Wants=sound.target
+
+[Service]
+Type=simple
+ExecStart=/home/shreyash/midi-clock-generator/venv/bin/python /home/shreyash/midi-clock-generator/midi-clock-generator.py --port-name PythonMIDIClock --daemon
+WorkingDirectory=/home/shreyash/midi-clock-generator
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+User=shreyash
+Group=audio
+
+# Environment
+Environment=HOME=/home/shreyash
+Environment=USER=shreyash
+
+[Install]
+WantedBy=multi-user.target
