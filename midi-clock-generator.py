@@ -240,29 +240,24 @@ if __name__ == "__main__":
                 f"WARNING: macOS IAC port '{mac_port}' not available. Clock thread will not run."
             )
 
-    with (
-        mido.open_output(mac_port)
-        if system == "Darwin"
-        else mido.open_output(port_name, virtual=True)
-    ) as port:
-        while True:
-            cmd = input("> ")
-            if cmd.lower() in ["quit", "exit"]:
-                running = False
-                break
-            elif cmd.lower() == "start":
-                playing = True
-                print("Clock START from console.")
-            elif cmd.lower() == "stop":
-                playing = False
-                print("Clock STOP from console.")
-            else:
-                try:
-                    new_bpm = float(cmd)
-                    if new_bpm > 0:
-                        BPM = new_bpm
-                        print(f"BPM updated to {BPM}")
-                except ValueError:
-                    print(
-                        "Invalid input. Enter a number for BPM, 'start', 'stop', or 'quit'."
-                    )
+    while True:
+        cmd = input("> ")
+        if cmd.lower() in ["quit", "exit"]:
+            running = False
+            break
+        elif cmd.lower() == "start":
+            playing = True
+            print("Clock START from console.")
+        elif cmd.lower() == "stop":
+            playing = False
+            print("Clock STOP from console.")
+        else:
+            try:
+                new_bpm = float(cmd)
+                if new_bpm > 0:
+                    BPM = new_bpm
+                    print(f"BPM updated to {BPM}")
+            except ValueError:
+                print(
+                    "Invalid input. Enter a number for BPM, 'start', 'stop', or 'quit'."
+                )
