@@ -1,10 +1,9 @@
-import mido
+import rtmidi
 import threading
 import time
 import argparse
 import json
 import os
-import platform
 
 # Global BPM (modifiable on the fly)
 BPM = 120
@@ -20,7 +19,6 @@ config = {
     "clock_control_cc": 20,  # 0=start, 1=stop
     "tap_cc": 21,  # momentary press = tap tempo
     "channel": 0,
-    "mac_output_port": "IAC Driver Bus 1",
     "warmup_ms": 1000,
 }
 
@@ -47,29 +45,9 @@ def save_config():
     print(f"Saved config to {CONFIG_FILE}")
 
 
-def midi_clock_thread(port_name, mac_port):
+def midi_clock_thread(port):
     global BPM, running, playing
-    system = platform.system()
-
-    # Warm-up delay for ALSA or CoreMIDI stability
-    time.sleep(config.get("warmup_ms", 1000) / 1000.0)
-
-    if system == "Darwin":  # macOS
-        outputs = mido.get_output_names()
-        if mac_port not in outputs:
-            print(f"ERROR: macOS output port '{mac_port}' not found.")
-            print(
-                "Go to Audio MIDI Setup → MIDI Studio, enable the IAC Driver, and create a port named to match."
-            )
-            running = False
-            return
-        with mido.open_output(mac_port) as port:
-            print(f"Opened macOS IAC port: {mac_port}")
-            _high_precision_clock_loop(port)
-    else:
-        with mido.open_output(port_name, virtual=True) as port:
-            print(f"Created virtual MIDI port: {port_name}")
-            _high_precision_clock_loop(port)
+    _high_precision_clock_loop(port)
 
 
 def _high_precision_clock_loop(port):
@@ -87,8 +65,8 @@ def _high_precision_clock_loop(port):
             if next_pulse_time is None:
                 next_pulse_time = current_time + interval
             
-            # Send clock pulse
-            port.send(mido.Message("clock"))
+            # Send clock pulse (0xF8 = MIDI clock)
+            port.send_message([0xF8])
             
             # Calculate next pulse time with drift compensation
             next_pulse_time += interval
@@ -114,20 +92,44 @@ def _high_precision_clock_loop(port):
 
 def midi_input_thread(input_name):
     global playing, BPM, tap_times
-    with mido.open_input(input_name) as inport:
-        for msg in inport:
-            if msg.type == "control_change" and msg.channel == config["channel"]:
+    
+    midiin = rtmidi.MidiIn()
+    available_ports = midiin.get_ports()
+    
+    port_idx = None
+    for i, port in enumerate(available_ports):
+        if input_name in port:
+            port_idx = i
+            break
+    
+    if port_idx is None:
+        print(f"ERROR: Input port '{input_name}' not found")
+        return
+    
+    midiin.open_port(port_idx)
+    print(f"Opened input port: {available_ports[port_idx]}")
+    
+    def midi_callback(message, data):
+        global playing, BPM, tap_times
+        msg, deltatime = message
+        
+        if len(msg) == 3 and msg[0] & 0xF0 == 0xB0:  # Control Change
+            channel = msg[0] & 0x0F
+            if channel == config["channel"]:
+                control = msg[1]
+                value = msg[2]
+                
                 # Clock control CC
-                if msg.control == config.get("clock_control_cc"):
-                    if msg.value == 0:
+                if control == config.get("clock_control_cc"):
+                    if value == 0:
                         playing = True
                         print("[CC] CLOCK START")
-                    elif msg.value == 1:
+                    elif value == 1:
                         playing = False
                         print("[CC] CLOCK STOP")
-
+                
                 # Tap tempo CC
-                elif msg.control == config.get("tap_cc") and msg.value == 127:
+                elif control == config.get("tap_cc") and value == 127:
                     now = time.time()
                     if tap_times and (now - tap_times[-1]) > TAP_RESET_SEC:
                         tap_times.clear()
@@ -142,16 +144,27 @@ def midi_input_thread(input_name):
                         if avg_interval > 0:
                             BPM = round(60.0 / avg_interval)
                             print(f"[CC] TAP tempo → BPM updated to {BPM}")
+    
+    midiin.set_callback(midi_callback)
+    
+    # Keep thread alive
+    while running:
+        time.sleep(0.1)
+    
+    midiin.close_port()
 
 
 def list_ports():
+    midiin = rtmidi.MidiIn()
+    midiout = rtmidi.MidiOut()
+    
     print("\nAvailable MIDI Input Ports:")
-    for name in mido.get_input_names():
-        print(f"  [IN]  {name}")
+    for i, name in enumerate(midiin.get_ports()):
+        print(f"  [{i}] [IN]  {name}")
 
     print("\nAvailable MIDI Output Ports:")
-    for name in mido.get_output_names():
-        print(f"  [OUT] {name}")
+    for i, name in enumerate(midiout.get_ports()):
+        print(f"  [{i}] [OUT] {name}")
     print("")
 
 
@@ -177,9 +190,6 @@ if __name__ == "__main__":
         help="Virtual MIDI output port name (Linux/Windows)",
     )
     parser.add_argument(
-        "--mac-port", type=str, help="Output port name for macOS (IAC Driver)"
-    )
-    parser.add_argument(
         "--no-save", action="store_true", help="Do not save overrides to config file"
     )
     parser.add_argument(
@@ -203,8 +213,6 @@ if __name__ == "__main__":
         config["channel"] = args.channel
     if args.bpm is not None:
         BPM = args.bpm
-    if args.mac_port is not None:
-        config["mac_output_port"] = args.mac_port
 
     # Save config unless --no-save was used
     if not args.no_save:
@@ -212,11 +220,15 @@ if __name__ == "__main__":
 
     port_name = args.port_name
     input_name = args.input
-    mac_port = config["mac_output_port"]
+
+    # Create virtual MIDI output port for sending clock signals
+    midiout = rtmidi.MidiOut()
+    midiout.open_virtual_port(port_name)
+    print(f"Created virtual MIDI port: {port_name}")
 
     # Start MIDI clock thread
     t_clock = threading.Thread(
-        target=midi_clock_thread, args=(port_name, mac_port), daemon=True
+        target=midi_clock_thread, args=(midiout,), daemon=True
     )
     t_clock.start()
 
@@ -228,14 +240,6 @@ if __name__ == "__main__":
         t_in.start()
 
     print("MIDI clock ready. Commands: enter BPM number, 'start', 'stop', or 'quit'.")
-
-    system = platform.system()
-    if system == "Darwin":
-        outputs = mido.get_output_names()
-        if mac_port not in outputs:
-            print(
-                f"WARNING: macOS IAC port '{mac_port}' not available. Clock thread will not run."
-            )
 
     while True:
         cmd = input("> ")
