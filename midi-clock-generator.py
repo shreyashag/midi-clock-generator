@@ -4,11 +4,14 @@ import time
 import argparse
 import json
 import os
+import subprocess
 
 # Global BPM (modifiable on the fly)
 BPM = 120
 running = True
 playing = False
+alsa_client_id = None
+alsa_port_id = None
 
 # Tap tempo state
 tap_times = []
@@ -45,8 +48,36 @@ def save_config():
     print(f"Saved config to {CONFIG_FILE}")
 
 
+def send_alsa_clock():
+    """Send MIDI clock via ALSA sequencer using amidi"""
+    global alsa_client_id, alsa_port_id
+    if alsa_client_id and alsa_port_id:
+        try:
+            subprocess.run(['amidi', '-p', f'hw:{alsa_client_id},{alsa_port_id}', '-S', 'F8'], 
+                          check=False, capture_output=True)
+        except:
+            pass
+
 def midi_clock_thread(port):
-    global BPM, running, playing
+    global BPM, running, playing, alsa_client_id, alsa_port_id
+    
+    # Get ALSA client/port info from aconnect
+    try:
+        result = subprocess.run(['aconnect', '-o'], capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if 'PythonMIDIClock' in line:
+                # Extract client ID from line like "client 128: 'RtMidiIn Client' [type=user,pid=2566]"
+                parts = line.split(':')
+                if len(parts) > 0:
+                    client_part = parts[0].strip()
+                    if 'client' in client_part:
+                        alsa_client_id = client_part.split()[-1]
+                        alsa_port_id = '0'  # Usually port 0
+                        print(f"Found ALSA client {alsa_client_id}:{alsa_port_id}")
+                        break
+    except:
+        pass
+    
     _high_precision_clock_loop(port)
 
 
@@ -65,8 +96,8 @@ def _high_precision_clock_loop(port):
             if next_pulse_time is None:
                 next_pulse_time = current_time + interval
             
-            # Send clock pulse (0xF8 = MIDI clock)
-            port.send_message([0xF8])
+            # Send clock pulse via ALSA sequencer
+            send_alsa_clock()
             
             # Calculate next pulse time with drift compensation
             next_pulse_time += interval
@@ -221,14 +252,15 @@ if __name__ == "__main__":
     port_name = args.port_name
     input_name = args.input
 
-    # Create virtual MIDI output port for sending clock signals
-    midiout = rtmidi.MidiOut()
-    midiout.open_virtual_port(port_name)
-    print(f"Created virtual MIDI port: {port_name}")
+    # Create virtual MIDI input port that will appear as OUTPUT in aconnect -o
+    # Other devices connect TO this port to receive clock
+    clock_in = rtmidi.MidiIn()
+    clock_in.open_virtual_port(port_name)
+    print(f"Created virtual MIDI port: {port_name} (appears as output for connections)")
 
-    # Start MIDI clock thread
+    # Start MIDI clock thread - we'll use a different approach for sending
     t_clock = threading.Thread(
-        target=midi_clock_thread, args=(midiout,), daemon=True
+        target=midi_clock_thread, args=(clock_in,), daemon=True
     )
     t_clock.start()
 
