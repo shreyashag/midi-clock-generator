@@ -1,0 +1,7 @@
+{
+  "clock_control_cc": 20,
+  "tap_cc": 21,
+  "channel": 0,
+  "mac_output_port": "IAC Driver Bus 1",
+  "warmup_ms": 1000
+}
