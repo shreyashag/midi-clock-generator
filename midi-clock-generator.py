@@ -112,7 +112,7 @@ def _high_precision_clock_loop(port):
             time.sleep(0.01)
 
 
-def midi_input_thread(input_name, output_name):
+def midi_input_thread(input_name):
     global playing, BPM, tap_times
     with mido.open_input(input_name) as inport:
         for msg in inport:
@@ -223,7 +223,7 @@ if __name__ == "__main__":
     # Start MIDI input listener if chosen
     if input_name:
         t_in = threading.Thread(
-            target=midi_input_thread, args=(input_name, port_name), daemon=True
+            target=midi_input_thread, args=(input_name,), daemon=True
         )
         t_in.start()
 
