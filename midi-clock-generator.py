@@ -10,8 +10,6 @@ import subprocess
 BPM = 120
 running = True
 playing = False
-alsa_client_id = None
-alsa_port_id = None
 
 # Tap tempo state
 tap_times = []
@@ -48,36 +46,15 @@ def save_config():
     print(f"Saved config to {CONFIG_FILE}")
 
 
-def send_alsa_clock():
-    """Send MIDI clock via ALSA sequencer using amidi"""
-    global alsa_client_id, alsa_port_id
-    if alsa_client_id and alsa_port_id:
-        try:
-            subprocess.run(['amidi', '-p', f'hw:{alsa_client_id},{alsa_port_id}', '-S', 'F8'], 
-                          check=False, capture_output=True)
-        except:
-            pass
-
-def midi_clock_thread(port):
-    global BPM, running, playing, alsa_client_id, alsa_port_id
-    
-    # Get ALSA client/port info from aconnect
+def send_midi_clock(port):
+    """Send MIDI clock pulse (0xF8)"""
     try:
-        result = subprocess.run(['aconnect', '-o'], capture_output=True, text=True)
-        for line in result.stdout.split('\n'):
-            if 'PythonMIDIClock' in line:
-                # Extract client ID from line like "client 128: 'RtMidiIn Client' [type=user,pid=2566]"
-                parts = line.split(':')
-                if len(parts) > 0:
-                    client_part = parts[0].strip()
-                    if 'client' in client_part:
-                        alsa_client_id = client_part.split()[-1]
-                        alsa_port_id = '0'  # Usually port 0
-                        print(f"Found ALSA client {alsa_client_id}:{alsa_port_id}")
-                        break
+        port.send_message([0xF8])
     except:
         pass
-    
+
+def midi_clock_thread(port):
+    global BPM, running, playing
     _high_precision_clock_loop(port)
 
 
@@ -96,8 +73,8 @@ def _high_precision_clock_loop(port):
             if next_pulse_time is None:
                 next_pulse_time = current_time + interval
             
-            # Send clock pulse via ALSA sequencer
-            send_alsa_clock()
+            # Send clock pulse via rtmidi
+            send_midi_clock(port)
             
             # Calculate next pulse time with drift compensation
             next_pulse_time += interval
@@ -185,6 +162,58 @@ def midi_input_thread(input_name):
     midiin.close_port()
 
 
+def midi_virtual_input_thread(virtual_port_name):
+    """Listen for control messages on our virtual input port"""
+    global playing, BPM, tap_times
+    
+    # We need to create a MidiIn to listen to the virtual MidiOut port we created
+    # This is a bit tricky - we need to find the port by name
+    midiin = rtmidi.MidiIn()
+    
+    def midi_callback(message, data):
+        global playing, BPM, tap_times
+        msg, deltatime = message
+        
+        if len(msg) == 3 and msg[0] & 0xF0 == 0xB0:  # Control Change
+            channel = msg[0] & 0x0F
+            if channel == config["channel"]:
+                control = msg[1]
+                value = msg[2]
+                
+                # Clock control CC
+                if control == config.get("clock_control_cc"):
+                    if value == 0:
+                        playing = True
+                        print("[CC] CLOCK START")
+                    elif value == 1:
+                        playing = False
+                        print("[CC] CLOCK STOP")
+                
+                # Tap tempo CC
+                elif control == config.get("tap_cc") and value == 127:
+                    now = time.time()
+                    if tap_times and (now - tap_times[-1]) > TAP_RESET_SEC:
+                        tap_times.clear()
+                    tap_times.append(now)
+                    if len(tap_times) > 4:
+                        tap_times.pop(0)
+                    if len(tap_times) >= 2:
+                        intervals = [
+                            t2 - t1 for t1, t2 in zip(tap_times, tap_times[1:])
+                        ]
+                        avg_interval = sum(intervals) / len(intervals)
+                        if avg_interval > 0:
+                            BPM = round(60.0 / avg_interval)
+                            print(f"[CC] TAP tempo → BPM updated to {BPM}")
+    
+    # For now, just print that we're ready for virtual input
+    print(f"Virtual input thread ready for {virtual_port_name}")
+    
+    # Keep thread alive
+    while running:
+        time.sleep(0.1)
+
+
 def list_ports():
     midiin = rtmidi.MidiIn()
     midiout = rtmidi.MidiOut()
@@ -252,22 +281,34 @@ if __name__ == "__main__":
     port_name = args.port_name
     input_name = args.input
 
-    # Create virtual MIDI input port that will appear as OUTPUT in aconnect -o
+    # Create virtual MIDI output port that will appear as OUTPUT in aconnect -o
     # Other devices connect TO this port to receive clock
-    clock_in = rtmidi.MidiIn()
-    clock_in.open_virtual_port(port_name)
-    print(f"Created virtual MIDI port: {port_name} (appears as output for connections)")
+    clock_out_port = rtmidi.MidiOut()
+    clock_out_port.open_virtual_port(f"{port_name}_OUT")
+    print(f"Created clock output port: {port_name}_OUT (for sending clock)")
+    
+    # Create virtual MIDI output port that will appear as INPUT in aconnect -i  
+    # We connect FROM this port to receive control messages
+    control_in_port = rtmidi.MidiOut()
+    control_in_port.open_virtual_port(f"{port_name}_IN")
+    print(f"Created control input port: {port_name}_IN (for receiving controls)")
 
-    # Start MIDI clock thread - we'll use a different approach for sending
+    # Start MIDI clock thread
     t_clock = threading.Thread(
-        target=midi_clock_thread, args=(clock_in,), daemon=True
+        target=midi_clock_thread, args=(clock_out_port,), daemon=True
     )
     t_clock.start()
 
-    # Start MIDI input listener if chosen
+    # Start MIDI input listener - use external input if specified, otherwise use our virtual input port
     if input_name:
         t_in = threading.Thread(
             target=midi_input_thread, args=(input_name,), daemon=True
+        )
+        t_in.start()
+    else:
+        # Listen on our virtual input port for control messages
+        t_in = threading.Thread(
+            target=midi_virtual_input_thread, args=(f"{port_name}_IN",), daemon=True
         )
         t_in.start()
 
